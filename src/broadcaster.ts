@@ -8,22 +8,27 @@ type BroadcasterState = { queue: OutFrame[]; sending: boolean };
 export class DeviceBroadcaster {
   private _clients = new Map<string, Set<WebSocket>>();
   private _state = new Map<string, BroadcasterState>();
+  private _browserClients = new Set<WebSocket>();
 
-  addClient(id: string, ws: WebSocket): void {
-    const old = this._clients.get(id);
-    if (old && old.size) {
-      for (const sock of old) {
-        try { sock.close(); } catch {}
+  addClient(id: string, ws: WebSocket, isBrowser = false): void {
+    if (!this._clients.has(id)) this._clients.set(id, new Set());
+    const clientSet = this._clients.get(id)!;
+
+    if (!isBrowser) {
+      // Device client (ESP32) reconnecting: kick stale device connections, keep browser observers
+      for (const sock of [...clientSet]) {
+        if (!this._browserClients.has(sock)) {
+          try { sock.close(); } catch {}
+          clientSet.delete(sock);
+        }
       }
-      old.clear();
     }
 
-    if (!this._clients.has(id)) this._clients.set(id, new Set());
-    this._clients.get(id)!.add(ws);
+    clientSet.add(ws);
 
     if (!this._state.has(id)) this._state.set(id, { queue: [], sending: false });
 
-    console.log(`[broadcaster] Client connected to device ${id}, total clients: ${this._clients.get(id)?.size}`);
+    console.log(`[broadcaster] Client connected to device ${id}, total clients: ${clientSet.size}`);
     ws.once("close", () => this.removeClient(id, ws));
     ws.once("error", () => this.removeClient(id, ws));
   }
@@ -60,6 +65,27 @@ export class DeviceBroadcaster {
     const st = this._ensureState(id);
     st.queue.push({ packets: [packet] });
     this._drainAsync(id).catch(() => {});
+  }
+
+  registerBrowserClient(ws: WebSocket): void {
+    this._browserClients.add(ws);
+    ws.once("close", () => this._browserClients.delete(ws));
+    ws.once("error", () => this._browserClients.delete(ws));
+  }
+
+  sendToBrowserClient(ws: WebSocket, packet: Buffer): void {
+    if (!this._browserClients.has(ws)) return;
+    if (ws.readyState === WebSocket.OPEN) {
+      try { ws.send(packet, { binary: true }); } catch {}
+    }
+  }
+
+  broadcastToAllBrowsers(packet: Buffer): void {
+    for (const ws of this._browserClients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(packet, { binary: true }); } catch {}
+      }
+    }
   }
 
   public sendCurrentURL(id: string, url: string): void {

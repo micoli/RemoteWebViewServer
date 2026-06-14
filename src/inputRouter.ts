@@ -5,6 +5,9 @@ import { mapPointForRotation } from "./util.js";
 export class InputRouter {
   private _lastMoveAt = 0;
   private readonly _moveThrottleMs: number;
+  private _moveCount = 0;
+  private _moveDropped = 0;
+  private _scrollStartMs = 0;
 
   constructor(moveThrottleMs = 12) {
     this._moveThrottleMs = moveThrottleMs;
@@ -14,10 +17,26 @@ export class InputRouter {
     const pkt = parseTouchPacket(buf);
     if (!pkt) return;
 
+    if (pkt.kind === TouchKind.Down) {
+      this._moveCount = 0;
+      this._moveDropped = 0;
+      this._scrollStartMs = Date.now();
+      console.log(`[scroll] DOWN  display=(${pkt.x},${pkt.y})`);
+    }
+
     if (pkt.kind === TouchKind.Move) {
       const now = Date.now();
-      if (now - this._lastMoveAt < this._moveThrottleMs) return;
+      if (now - this._lastMoveAt < this._moveThrottleMs) {
+        this._moveDropped++;
+        return;
+      }
       this._lastMoveAt = now;
+      this._moveCount++;
+    }
+
+    if (pkt.kind === TouchKind.Up) {
+      const dt = Date.now() - this._scrollStartMs;
+      console.log(`[scroll] UP    display=(${pkt.x},${pkt.y}) moves=${this._moveCount} dropped=${this._moveDropped} duration=${dt}ms`);
     }
 
     await this._dispatchTouchAsync(dev, pkt.kind, pkt.x, pkt.y);
@@ -54,7 +73,9 @@ export class InputRouter {
 
       switch (kind) {
         case TouchKind.Down:
+          console.log(`[scroll] CDP touchStart browser=(${rotated.x},${rotated.y})`);
           await dev.cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: points });
+          console.log(`[scroll] CDP touchStart OK`);
           break;
 
         case TouchKind.Move:
@@ -62,7 +83,9 @@ export class InputRouter {
           break;
 
         case TouchKind.Up:
+          console.log(`[scroll] CDP touchEnd browser=(${rotated.x},${rotated.y})`);
           await dev.cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+          console.log(`[scroll] CDP touchEnd OK`);
           break;
 
         case TouchKind.Tap:
@@ -71,7 +94,7 @@ export class InputRouter {
           break;
       }
     } catch (e) {
-      console.warn(`Failed to dispatch touch event: ${(e as Error).message}`);
+      console.warn(`[scroll] CDP dispatch FAILED (${TouchKind[kind]}): ${(e as Error).message}`);
     }
   }
 }

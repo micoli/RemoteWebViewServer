@@ -7,6 +7,7 @@ import { DeviceBroadcaster } from "./broadcaster.js";
 import { hash32 } from "./util.js";
 import { SelfTestRunner } from "./selfTest.js";
 import { getInjectScriptFromUrl } from "./scriptLoader.js";
+import { buildDeviceListPacket, DeviceSummary } from "./protocol.js";
 
 export type DeviceSession = {
   id: string;
@@ -32,16 +33,75 @@ const devices = new Map<string, DeviceSession>();
 let _cleanupRunning = false;
 export const broadcaster = new DeviceBroadcaster();
 
-export async function ensureDeviceAsync(id: string, cfg: DeviceConfig): Promise<DeviceSession> {
+export function getDeviceSummaries(): DeviceSummary[] {
+  return Array.from(devices.values()).map(d => ({
+    id: d.deviceId,
+    url: d.url,
+    lastActive: d.lastActive,
+  }));
+}
+
+export function broadcastDeviceList(): void {
+  broadcaster.broadcastToAllBrowsers(buildDeviceListPacket(getDeviceSummaries()));
+}
+
+export function getAllDeviceSessions(): DeviceSession[] {
+  return Array.from(devices.values());
+}
+
+async function processB64FrameAsync(dev: DeviceSession, b64: string): Promise<void> {
+  try {
+    const pngFull = Buffer.from(b64, 'base64');
+    const h32 = hash32(pngFull);
+    if (dev.prevFrameHash === h32) return;
+    dev.prevFrameHash = h32;
+
+    let img = sharp(pngFull);
+    if (dev.cfg.rotation) img = img.rotate(dev.cfg.rotation);
+
+    const { data, info } = await img.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const out = await dev.processor.processFrameAsync({ data, width: info.width, height: info.height });
+    if (out.rects.length > 0) {
+      dev.frameId = (dev.frameId + 1) >>> 0;
+      broadcaster.sendFrameChunked(dev.deviceId, out, dev.frameId, dev.cfg.maxBytesPerMessage);
+    }
+  } catch (e) {
+    console.warn(`[device] Failed to process frame for ${dev.deviceId}: ${(e as Error).message}`);
+  }
+}
+
+export async function ensureDeviceAsync(id: string, cfg: DeviceConfig, attach = false): Promise<DeviceSession> {
   const root = getRoot();
   if (!root) throw new Error("CDP not ready");
 
   let device = devices.get(id);
   if (device) {
-    if (deviceConfigsEqual(device.cfg, cfg)) {
-      device.lastActive = Date.now();
-      device.processor.requestFullFrame();
-      return device;
+    if (attach || deviceConfigsEqual(device.cfg, cfg)) {
+      try {
+        device.lastActive = Date.now();
+        device.processor.requestFullFrame();
+        // Capture current page state and push it immediately to the reconnecting client.
+        // Chrome won't emit a screencast frame for a static page on its own.
+        try {
+          const { data: b64 } = await (device.cdp as any).send('Page.captureScreenshot', { format: 'png' }) as { data: string };
+          await processB64FrameAsync(device, b64);
+        } catch (e) {
+          console.warn(`[device] captureScreenshot failed for ${id}: ${(e as Error).message}`);
+        }
+        if (device.url) broadcaster.sendCurrentURL(id, device.url);
+        // Restart screencast for ongoing live updates
+        await device.cdp.send('Page.stopScreencast').catch(() => {});
+        await device.cdp.send('Page.startScreencast', {
+          format: 'png',
+          maxWidth: device.cfg.width,
+          maxHeight: device.cfg.height,
+          everyNthFrame: device.cfg.everyNthFrame,
+        });
+        return device;
+      } catch (e) {
+        console.warn(`[device] CDP session broken for ${id}, recreating: ${(e as Error).message}`);
+        await deleteDeviceAsync(device).catch(() => {});
+      }
     } else {
       console.log(`[device] Reconfiguring device ${id}`);
       await deleteDeviceAsync(device);
@@ -79,6 +139,7 @@ export async function ensureDeviceAsync(id: string, cfg: DeviceConfig): Promise<
     await session.send('Page.addScriptToEvaluateOnNewDocument', { source: keyboardScript });
   }
 
+  await session.send('Page.navigate', { url: 'file:///app/self-test/dark.html' });
   await session.send('Page.startScreencast', {
     format: 'png',
     maxWidth: cfg.width,
@@ -116,38 +177,11 @@ export async function ensureDeviceAsync(id: string, cfg: DeviceConfig): Promise<
   const flushPending = async () => {
     const dev = newDevice;
     dev.throttleTimer = undefined;
-
     const b64 = dev.pendingB64;
     dev.pendingB64 = undefined;
     if (!b64) return;
-
-    try {
-      const pngFull = Buffer.from(b64, 'base64');
-
-      const h32 = hash32(pngFull);
-      if (dev.prevFrameHash === h32) {
-        dev.lastProcessedMs = Date.now();
-        return;
-      }
-      dev.prevFrameHash = h32;
-
-      let img = sharp(pngFull);
-      if (dev.cfg.rotation) img = img.rotate(dev.cfg.rotation);
-
-      const { data, info } = await img
-        .ensureAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      const out = await processor.processFrameAsync({ data, width: info.width, height: info.height });
-      if (out.rects.length > 0) {
-        dev.frameId = (dev.frameId + 1) >>> 0;
-        broadcaster.sendFrameChunked(id, out, dev.frameId, cfg.maxBytesPerMessage);
-      }
-    } catch (e) {
-      console.warn(`[device] Failed to process frame for ${id}: ${(e as Error).message}`);
-    } finally {
-      dev.lastProcessedMs = Date.now();
-    }
+    await processB64FrameAsync(dev, b64);
+    dev.lastProcessedMs = Date.now();
   };
 
   session.on('Page.screencastFrame', async (evt: any) => {
@@ -168,10 +202,12 @@ export async function ensureDeviceAsync(id: string, cfg: DeviceConfig): Promise<
   });
 
   const handleNavigation = (url: string) => {
+    if (url === 'about:blank') return;
     if (newDevice.url !== url) {
       newDevice.url = url;
       broadcaster.sendCurrentURL(newDevice.deviceId, url);
       console.log(`[device] URL changed to: ${url}`);
+      broadcastDeviceList();
     }
   };
 
@@ -204,10 +240,18 @@ export async function cleanupIdleAsync(ttlMs = 5 * 60_000) {
 
       console.log(`[device] Cleaning up idle device ${id}`);
       await deleteDeviceAsync(dev).catch(() => { /* swallow */ });
+      broadcastDeviceList();
     }
   } finally {
     _cleanupRunning = false;
   }
+}
+
+export async function killDeviceAsync(id: string): Promise<void> {
+  const dev = devices.get(id);
+  if (!dev) return;
+  await deleteDeviceAsync(dev);
+  broadcastDeviceList();
 }
 
 async function deleteDeviceAsync(device: DeviceSession) {

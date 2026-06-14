@@ -29,6 +29,8 @@ export enum MsgType {
   OpenURL     = 4,
   Keepalive   = 5,
   CurrentURL  = 6,
+  DeviceList  = 7,
+  KillDevice  = 8,
 }
 
 export enum Encoding {
@@ -79,6 +81,31 @@ export const TOUCH_BYTES        = 1 + 1 + 1 + 1 + 2 + 2;  // 8
 export const FRAME_STATS_BYTES  = 1 + 1 + 4 + 4;          // 10
 export const OPENURL_HEADER_BYTES = 1 + 1 + 2 + 4;        // 8
 export const CURRENTURL_HEADER_BYTES = 1 + 1 + 4;         // 6
+export const DEVICELIST_HEADER_BYTES = 1 + 1 + 4;         // 6
+
+export type DeviceSummary = {
+  id: string;
+  url: string;
+  lastActive: number;
+};
+
+export function parseKillDevicePacket(buf: Buffer): string | null {
+  if (!Buffer.isBuffer(buf) || buf.length < 6) return null;
+  if (buf.readUInt8(0) !== MsgType.KillDevice) return null;
+  const len = buf.readUInt32LE(2);
+  if (buf.length < 6 + len) return null;
+  return buf.subarray(6, 6 + len).toString("utf8");
+}
+
+export function buildDeviceListPacket(devices: DeviceSummary[]): Buffer {
+  const json = Buffer.from(JSON.stringify(devices), "utf8");
+  const buf = Buffer.alloc(DEVICELIST_HEADER_BYTES + json.length);
+  buf.writeUInt8(MsgType.DeviceList, 0);
+  buf.writeUInt8(PROTOCOL_VERSION, 1);
+  buf.writeUInt32LE(json.length, 2);
+  json.copy(buf, DEVICELIST_HEADER_BYTES);
+  return buf;
+}
 
 const clampU16 = (v: number) => (v < 0 ? 0 : v > 0xffff ? 0xffff : v|0);
 
