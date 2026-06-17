@@ -53,6 +53,8 @@ export enum TouchKind {
 export const FLAG_LAST_OF_FRAME = 1 << 0;
 export const FLAG_IS_FULL_FRAME = 1 << 1;
 
+export const FLAG_OPENURL_FORCE = 1 << 0;
+
 export interface Rect {
   x: number;
   y: number;

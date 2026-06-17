@@ -1,5 +1,5 @@
 import type { DeviceSession } from "./deviceManager.js";
-import { TouchKind, parseFrameStatsPacket, parseOpenURLPacket, parseTouchPacket } from "./protocol.js";
+import { FLAG_OPENURL_FORCE, TouchKind, parseFrameStatsPacket, parseOpenURLPacket, parseTouchPacket } from "./protocol.js";
 import { mapPointForRotation } from "./util.js";
 
 export class InputRouter {
@@ -56,7 +56,7 @@ export class InputRouter {
       } else {
         dev.selfTestRunner.stop();
         
-        if (dev.url !== pkt.url)
+        if (dev.url !== pkt.url || (pkt.flags & FLAG_OPENURL_FORCE))
           await dev.cdp.send('Page.navigate', { url: pkt.url });
       }
   }
