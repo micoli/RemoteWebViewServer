@@ -11,7 +11,7 @@ const WS_PORT = env.get("WS_PORT").default("8081").asIntPositive();
 const HEALTH_PORT = env.get("HEALTH_PORT").default("18080").asIntPositive();
 
 const wss = new WebSocketServer({ port: WS_PORT, perMessageDeflate: false });
-const inputRouter = new InputRouter();
+const inputRouter = new InputRouter(broadcaster);
 
 await bootstrapAsync();
 
@@ -21,9 +21,6 @@ wss.on("connection", async (ws, req) => {
 
   const isBrowser = url.searchParams.get("type") === "browser";
   const attach = url.searchParams.get("attach") === "1";
-  const cfg = makeConfigFromParams(url.searchParams);
-  setConfigFor(id, cfg);
-  logDeviceConfig(id, cfg);
 
   if (isBrowser) broadcaster.registerBrowserClient(ws);
   broadcaster.addClient(id, ws, isBrowser);
@@ -33,18 +30,22 @@ wss.on("connection", async (ws, req) => {
   const earlyHandler = (msg: WebSocket.RawData, isBinary: boolean) => earlyMessages.push({ msg, isBinary });
   ws.on("message", earlyHandler);
 
+  let cfg;
   let dev;
   try {
+    cfg = makeConfigFromParams(url.searchParams);
+    setConfigFor(id, cfg);
+    logDeviceConfig(id, cfg);
     dev = await ensureDeviceAsync(id, cfg, attach);
   } catch (e) {
-    console.error(`[server] ensureDeviceAsync failed for ${id}, closing connection:`, (e as Error).message);
+    console.error(`[server] setup failed for ${id}, closing connection:`, (e as Error).message);
     ws.off("message", earlyHandler);
     broadcaster.removeClient(id, ws);
     ws.close();
     return;
   }
 
-  // Send the current device list only to browser clients
+  // Send the current device list only to browser clients that attached to a device
   if (isBrowser) broadcaster.sendToBrowserClient(ws, buildDeviceListPacket(getDeviceSummaries()));
 
   ws.off("message", earlyHandler);

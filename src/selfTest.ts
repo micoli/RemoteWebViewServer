@@ -9,6 +9,9 @@ export class SelfTestRunner {
   private _timeoutId0?: NodeJS.Timeout;
   private _timeoutId1?: NodeJS.Timeout;
   private _timeoutId2?: NodeJS.Timeout;
+  private _running = false;
+
+  public isRunning(): boolean { return this._running; }
 
   constructor(broadcaster: DeviceBroadcaster) {
     this._broadcaster = broadcaster;
@@ -18,6 +21,7 @@ export class SelfTestRunner {
     if (this._timeoutId0) clearTimeout(this._timeoutId0);
     if (this._timeoutId1) clearTimeout(this._timeoutId1);
     if (this._timeoutId2) clearTimeout(this._timeoutId2);
+    this._running = true;
 
     await session.send('Page.navigate', { url: 'file:///app/self-test/test1.html' });
 
@@ -57,7 +61,7 @@ export class SelfTestRunner {
   public stop(): void {
     if (this._timeoutId0 || this._timeoutId1 || this._timeoutId2)
       console.log(`[Self test] Stopped`);
-    
+
     if (this._timeoutId0) clearTimeout(this._timeoutId0);
     if (this._timeoutId1) clearTimeout(this._timeoutId1);
     if (this._timeoutId2) clearTimeout(this._timeoutId2);
@@ -65,5 +69,6 @@ export class SelfTestRunner {
     this._timeoutId1 = undefined;
     this._timeoutId2 = undefined;
     this._stage = 0;
+    this._running = false;
   }
 }

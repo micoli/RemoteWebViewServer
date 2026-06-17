@@ -53,6 +53,8 @@ export class DeviceBroadcaster {
     const packets = buildFramePackets(data.rects, data.encoding, frameId, data.isFullFrame, maxBytes);
 
     const st = this._ensureState(id);
+    // Drop stale frames: keep only control packets (no frameId), discard pending frame data
+    st.queue = st.queue.filter(f => f.frameId == null);
     st.queue.push({ frameId, packets });
     this._drainAsync(id).catch(() => {});
   }
@@ -88,6 +90,17 @@ export class DeviceBroadcaster {
     }
   }
 
+  sendAdaptiveStatsToBrowsers(id: string, packet: Buffer): void {
+    const peers = this._clients.get(id);
+    if (!peers) return;
+    for (const ws of peers) {
+      if (this._browserClients.has(ws) && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(packet, { binary: true }); } catch {}
+      }
+    }
+  }
+
+
   public sendCurrentURL(id: string, url: string): void {
     const peers = this._clients.get(id);
     if (!peers || peers.size === 0) return;
@@ -108,6 +121,22 @@ export class DeviceBroadcaster {
     return st;
   }
 
+  private _sendToPeer(ws: WebSocket, peers: Set<WebSocket>, pkt: Buffer): Promise<void> {
+    return new Promise<void>(resolve => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        peers.delete(ws);
+        return resolve();
+      }
+      ws.send(pkt, { binary: true }, err => {
+        if (err) {
+          try { ws.close(); } catch {}
+          peers.delete(ws);
+        }
+        resolve();
+      });
+    });
+  }
+
   private async _drainAsync(id: string): Promise<void> {
     const st = this._ensureState(id);
     if (st.sending) return;
@@ -120,21 +149,8 @@ export class DeviceBroadcaster {
       while (st.queue.length) {
         const f = st.queue.shift()!;
         for (const pkt of f.packets) {
-          for (const ws of new Set(peers)) {
-            if (ws.readyState !== WebSocket.OPEN) {
-              peers.delete(ws);
-              continue;
-            }
-            try {
-              ws.send(pkt, { binary: true });
-            } catch {
-              // drop on send error
-              try { ws.close(); } catch {}
-              peers.delete(ws);
-            }
-          }
+          await Promise.all([...peers].map(ws => this._sendToPeer(ws, peers, pkt)));
           if (peers.size === 0) { st.queue.length = 0; return; }
-          await Promise.resolve();
         }
       }
     } finally {

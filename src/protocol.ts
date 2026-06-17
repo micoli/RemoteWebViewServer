@@ -81,6 +81,7 @@ export const FRAME_HEADER_BYTES = 1 + 1 + 4 + 1 + 2 + 2;  // 11
 export const TILE_HEADER_BYTES  = 2 + 2 + 2 + 2 + 4;      // 12
 export const TOUCH_BYTES        = 1 + 1 + 1 + 1 + 2 + 2;  // 8
 export const FRAME_STATS_BYTES  = 1 + 1 + 4 + 4;          // 10
+export const FRAME_STATS_UPDATE_BYTES = 1 + 1 + 4 + 4 + 4; // 14 (extended: includes adaptedInterval)
 export const OPENURL_HEADER_BYTES = 1 + 1 + 2 + 4;        // 8
 export const CURRENTURL_HEADER_BYTES = 1 + 1 + 4;         // 6
 export const DEVICELIST_HEADER_BYTES = 1 + 1 + 4;         // 6
@@ -147,12 +148,17 @@ export function parseTouchPacket(buf: Buffer): TouchPacket | null {
   return { kind, pointerId, x, y };
 }
 
-export function parseFrameStatsPacket(buf: Buffer): number | null {
+export type ParsedFrameStats = { avgTime: number; bytes: number };
+
+export function parseFrameStatsPacket(buf: Buffer): ParsedFrameStats | null {
   if (!Buffer.isBuffer(buf) || buf.length < FRAME_STATS_BYTES) return null;
   if (buf.readUInt8(0) !== MsgType.FrameStats) return null;
   if (buf.readUInt8(1) !== PROTOCOL_VERSION) return null;
 
-  return buf.readUInt32LE(2);
+  return {
+    avgTime: buf.readUInt32LE(2),
+    bytes: buf.readUInt32LE(6),
+  };
 }
 
 export function parseOpenURLPacket(buf: Buffer): { flags: number; url: string } | null {
@@ -171,12 +177,20 @@ export function parseOpenURLPacket(buf: Buffer): { flags: number; url: string } 
 
 export function buildFrameStatsPacket(): Buffer {
   const data = Buffer.alloc(FRAME_STATS_BYTES);
-  
   data.writeUInt8(MsgType.FrameStats, 0);
   data.writeUInt8(PROTOCOL_VERSION, 1);
   data.writeUInt32LE(0, 2);
   data.writeUInt32LE(0, 6);
-  
+  return data;
+}
+
+export function buildFrameStatsUpdatePacket(avgTime: number, bytes: number, adaptedInterval: number): Buffer {
+  const data = Buffer.alloc(FRAME_STATS_UPDATE_BYTES);
+  data.writeUInt8(MsgType.FrameStats, 0);
+  data.writeUInt8(PROTOCOL_VERSION, 1);
+  data.writeUInt32LE(avgTime >>> 0, 2);
+  data.writeUInt32LE(bytes >>> 0, 6);
+  data.writeUInt32LE(adaptedInterval >>> 0, 10);
   return data;
 }
 

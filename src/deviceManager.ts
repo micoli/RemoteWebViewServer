@@ -20,12 +20,14 @@ export type DeviceSession = {
   frameId: number;
   prevFrameHash: number;
   processor: FrameProcessor;
-  selfTestRunner: SelfTestRunner
+  selfTestRunner: SelfTestRunner;
+  adaptiveMinFrameInterval: number;
 
   // trailing throttle state
   pendingB64?: string;
   throttleTimer?: NodeJS.Timeout;
   lastProcessedMs?: number;
+  statsIntervalId?: NodeJS.Timeout;
 };
 
 const PREFERS_REDUCED_MOTION = /^(1|true|yes|on)$/i.test(process.env.PREFERS_REDUCED_MOTION ?? '');
@@ -121,7 +123,9 @@ export async function ensureDeviceAsync(id: string, cfg: DeviceConfig, attach = 
   });
   const session = (root as any).session(sessionId);
 
+  console.log(`[device] CDP setup: Page.enable for ${id}`);
   await session.send('Page.enable');
+  console.log(`[device] CDP setup: Emulation.setDeviceMetricsOverride for ${id}`);
   await session.send('Emulation.setDeviceMetricsOverride', {
     width: cfg.width,
     height: cfg.height,
@@ -140,7 +144,9 @@ export async function ensureDeviceAsync(id: string, cfg: DeviceConfig, attach = 
     await session.send('Page.addScriptToEvaluateOnNewDocument', { source: keyboardScript });
   }
 
-  await session.send('Page.navigate', { url: 'file:///app/self-test/dark.html' });
+  console.log(`[device] CDP setup: Page.navigate for ${id}`);
+  await session.send('Page.navigate', { url: 'data:text/html,<html><body style="margin:0;background:#000"></body></html>' });
+  console.log(`[device] CDP setup: Page.startScreencast for ${id}`);
   await session.send('Page.startScreencast', {
     format: 'png',
     maxWidth: cfg.width,
@@ -168,9 +174,11 @@ export async function ensureDeviceAsync(id: string, cfg: DeviceConfig, attach = 
     prevFrameHash: 0,
     processor,
     selfTestRunner: new SelfTestRunner(broadcaster),
+    adaptiveMinFrameInterval: cfg.minFrameInterval,
     pendingB64: undefined,
     throttleTimer: undefined,
     lastProcessedMs: undefined,
+    statsIntervalId: undefined,
   };
   devices.set(id, newDevice);
   newDevice.processor.requestFullFrame();
@@ -197,10 +205,16 @@ export async function ensureDeviceAsync(id: string, cfg: DeviceConfig, attach = 
     const now = Date.now();
     const since = newDevice.lastProcessedMs ? (now - newDevice.lastProcessedMs) : Infinity;
     if (!newDevice.throttleTimer) {
-      const delay = Math.max(0, cfg.minFrameInterval - (Number.isFinite(since) ? since : 0));
+      const delay = Math.max(0, newDevice.adaptiveMinFrameInterval - (Number.isFinite(since) ? since : 0));
       newDevice.throttleTimer = setTimeout(flushPending, delay);
     }
   });
+
+  newDevice.statsIntervalId = setInterval(() => {
+    if (broadcaster.getClientCount(newDevice.deviceId) > 0 && !newDevice.selfTestRunner.isRunning()) {
+      broadcaster.startSelfTestMeasurement(newDevice.deviceId);
+    }
+  }, 10_000);
 
   const handleNavigation = (url: string) => {
     if (url === 'about:blank') return;
@@ -264,6 +278,9 @@ async function deleteDeviceAsync(device: DeviceSession) {
 
   if (device.throttleTimer)
     clearTimeout(device.throttleTimer);
+
+  if (device.statsIntervalId)
+    clearInterval(device.statsIntervalId);
 
   try { await device.cdp.send("Page.stopScreencast").catch(() => { }); } catch { }
   try { await root?.send("Target.closeTarget", { targetId: device.id }); } catch { }

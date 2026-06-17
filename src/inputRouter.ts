@@ -1,6 +1,7 @@
 import type { DeviceSession } from "./deviceManager.js";
-import { FLAG_OPENURL_FORCE, TouchKind, parseFrameStatsPacket, parseOpenURLPacket, parseTouchPacket } from "./protocol.js";
+import { FLAG_OPENURL_FORCE, TouchKind, parseFrameStatsPacket, parseOpenURLPacket, parseTouchPacket, buildFrameStatsUpdatePacket } from "./protocol.js";
 import { mapPointForRotation } from "./util.js";
+import type { DeviceBroadcaster } from "./broadcaster.js";
 
 export class InputRouter {
   private _lastMoveAt = 0;
@@ -8,8 +9,10 @@ export class InputRouter {
   private _moveCount = 0;
   private _moveDropped = 0;
   private _scrollStartMs = 0;
+  private readonly _broadcaster: DeviceBroadcaster;
 
-  constructor(moveThrottleMs = 12) {
+  constructor(broadcaster: DeviceBroadcaster, moveThrottleMs = 12) {
+    this._broadcaster = broadcaster;
     this._moveThrottleMs = moveThrottleMs;
   }
 
@@ -43,8 +46,21 @@ export class InputRouter {
   }
 
   public async handleFrameStatsPacketAsync(dev: DeviceSession, buf: Buffer): Promise<void> {
-    const value = parseFrameStatsPacket(buf);
-    dev.selfTestRunner?.setFrameRenderTimeAsync(value ?? 0, dev.cdp);
+    const stats = parseFrameStatsPacket(buf);
+    const avgTime = stats?.avgTime ?? 0;
+    const bytesReceived = stats?.bytes ?? 0;
+    dev.selfTestRunner?.setFrameRenderTimeAsync(avgTime, dev.cdp);
+
+    if (avgTime > 0 && !dev.selfTestRunner.isRunning()) {
+      const target = Math.ceil(avgTime * 1.1);
+      const adapted = Math.max(dev.cfg.minFrameInterval, Math.min(500, target));
+      if (adapted !== dev.adaptiveMinFrameInterval) {
+        console.log(`[adaptive] minFrameInterval ${dev.adaptiveMinFrameInterval}→${adapted}ms (avg render=${avgTime}ms)`);
+        dev.adaptiveMinFrameInterval = adapted;
+      }
+      const pkt = buildFrameStatsUpdatePacket(avgTime, bytesReceived, dev.adaptiveMinFrameInterval);
+      this._broadcaster.sendAdaptiveStatsToBrowsers(dev.deviceId, pkt);
+    }
   }
 
   public async handleOpenURLPacketAsync(dev: DeviceSession, buf: Buffer): Promise<void> {
