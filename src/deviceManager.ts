@@ -7,6 +7,7 @@ import { DeviceBroadcaster } from "./broadcaster.js";
 import { hash32 } from "./util.js";
 import { SelfTestRunner } from "./selfTest.js";
 import { getInjectScriptFromUrl } from "./scriptLoader.js";
+import { tryAutofillAsync } from "./haAutofill.js";
 import { buildDeviceListPacket, DeviceSummary } from "./protocol.js";
 
 export type DeviceSession = {
@@ -209,6 +210,7 @@ export async function ensureDeviceAsync(id: string, cfg: DeviceConfig, attach = 
       console.log(`[device] URL changed to: ${url}`);
       broadcastDeviceList();
     }
+    tryAutofillAsync(session, url).catch(() => {});
   };
 
   session.on('Page.frameNavigated', (evt: any) => {

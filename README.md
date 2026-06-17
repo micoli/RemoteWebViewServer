@@ -33,6 +33,18 @@ The server does not include a built-in on-screen keyboard, but you can inject an
 >
 > The injected script runs with full access to every page the server renders, including any active sessions, credentials, and cookies. Only use scripts from sources you fully trust. Never point this at a URL controlled by a third party.
 
+## Home Assistant credential autofill
+
+The server can automatically fill in the HA login form when the browser lands on the login page.
+
+- `HA_CREDENTIAL_AUTOFILL` (`false` by default): enable automatic credential injection on the HA login page.
+- `HA_USERNAME` (empty by default): Home Assistant username/login.
+- `HA_PASSWORD` (empty by default): Home Assistant password.
+
+> [!CAUTION]
+>
+> Credentials are passed as plain environment variables. Make sure your deployment environment (Docker secrets, HA OS addon config) restricts access to these values appropriately.
+
 ## Accessing the server’s tab with Chrome DevTools
 
 1. Make sure your server exposes the DevTools (CDP) port (e.g., 9222).
@@ -74,6 +86,9 @@ services:
       INJECT_JS_ALLOW_HTTP: false
       USER_DATA_DIR: /pw-data
       BROWSER_LOCALE: "en-US"
+      HA_CREDENTIAL_AUTOFILL: false
+      HA_USERNAME: ""
+      HA_PASSWORD: ""
     ports:
       - "8081:8081"                   # WebSocket stream
       - "9222:9222"                   # external DevTools via socat

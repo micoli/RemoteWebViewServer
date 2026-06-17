@@ -39,6 +39,9 @@ options:
   inject_js_url: ""
   inject_js_allow_http: false
   user_data_dir: "/pw-data"
+  ha_credential_autofill: false
+  ha_username: ""
+  ha_password: ""
 
 schema:
   tile_size: int
@@ -58,3 +61,6 @@ schema:
   inject_js_url: str
   inject_js_allow_http: bool
   user_data_dir: str
+  ha_credential_autofill: bool
+  ha_username: str
+  ha_password: str
